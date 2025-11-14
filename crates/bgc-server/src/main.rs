@@ -17,7 +17,9 @@ use tracing_subscriber::{
     fmt,
 };
 
-mod bridge;
+mod bridge {
+    tonic::include_proto!("bridge");
+}
 
 use bridge::{
     Frame,
