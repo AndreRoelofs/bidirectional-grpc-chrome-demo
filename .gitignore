@@ -22,3 +22,5 @@ target
 
 # dependencies
 node_modules
+
+*.log
