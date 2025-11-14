@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package bridge;
+
+service Bridge {
+    rpc Open(stream Frame) returns (stream Frame);
+}
+
+message Frame {
+  // "request", "response", "event"
+  string kind = 1;
+
+  // correlation id for request/response
+  uint64 id = 2;
+
+  // request action
+  string action = 3;
+
+  // event name
+  string event = 4;
+
+  // JSON-encoded payload (string)
+  string payload_json = 5;
+
+  // response status
+  bool ok = 6;
+}

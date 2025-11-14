@@ -1,0 +1,15 @@
+
+[package]
+name = "bgc-server"
+version = "0.0.0"
+edition = "2024"
+authors.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+tracing = { workspace = true }
+tonic = { workspace = true }
+tonic-prost = { workspace = true }
+
+[build-dependencies]
+tonic-prost-build = { workspace = true }
