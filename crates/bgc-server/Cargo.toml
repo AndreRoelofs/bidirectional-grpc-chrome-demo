@@ -18,6 +18,8 @@ tracing = { workspace = true }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 futures = { workspace = true }
+prost = { workspace = true }
+prost-types = { workspace = true }
 
 [build-dependencies]
 tonic-prost-build = { workspace = true }

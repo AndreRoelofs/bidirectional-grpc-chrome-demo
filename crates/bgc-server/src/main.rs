@@ -177,7 +177,7 @@ async fn main() -> anyhow::Result<()> {
         chrome_from_tx,
     };
 
-    let addr = "127.0.0.1:50051".parse().unwrap();
+    let addr = "[::1]:50051".parse().unwrap();
 
     Server::builder()
         .add_service(BridgeServer::new(svc))

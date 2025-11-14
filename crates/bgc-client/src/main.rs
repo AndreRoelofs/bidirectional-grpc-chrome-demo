@@ -10,7 +10,6 @@ use serde_json::Value;
 use tokio::sync::{mpsc, oneshot};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::Request;
-use tonic::transport::Channel;
 
 pub mod bridge {
     tonic::include_proto!("bridge");
@@ -25,11 +24,7 @@ type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Frame>>>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let channel = Channel::from_static("http://127.0.0.1:50051")
-        .connect()
-        .await
-        .unwrap();
-    let mut client = BridgeClient::new(channel);
+    let mut client = BridgeClient::connect(format!("http://[::1]:50051")).await?;
 
     let (tx_out, rx_out) = mpsc::channel::<Frame>(32);
     let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));

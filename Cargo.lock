@@ -89,6 +89,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures",
+ "prost",
+ "prost-types",
  "serde",
  "serde_json",
  "serde_json_lenient",
@@ -106,6 +108,8 @@ version = "0.0.0"
 dependencies = [
  "anyhow",
  "futures",
+ "prost",
+ "prost-types",
  "serde",
  "serde_json",
  "serde_json_lenient",

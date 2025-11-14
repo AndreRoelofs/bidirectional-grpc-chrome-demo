@@ -1,0 +1,7 @@
+{
+  "name": "com.example.rust_native_demo",
+  "description": "Rust native messaging demo host",
+  "path": "/absolute/path/to/rust-host/target/release/bgc-server",
+  "type": "stdio",
+  "allowed_origins": ["chrome-extension://YOUR_EXTENSION_ID/"]
+}

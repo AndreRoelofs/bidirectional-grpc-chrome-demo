@@ -1,0 +1,15 @@
+{
+  "manifest_version": 3,
+  "name": "Rust Native Messaging Demo",
+  "version": "0.1.0",
+  "description": "Async 2-way communication between Chrome extension and Rust native host.",
+  "permissions": ["nativeMessaging", "tabs"],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "action": {
+    "default_title": "Rust Native Demo",
+    "default_popup": "popup.html"
+  }
+}
