@@ -24,48 +24,62 @@ type PendingMap = Arc<Mutex<HashMap<u64, oneshot::Sender<Frame>>>>;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    println!("bgc-client: Starting");
+    println!("bgc-client: Connecting to gRPC server at http://[::1]:50051");
+
     let mut client = BridgeClient::connect(format!("http://[::1]:50051")).await?;
+    println!("bgc-client: Connected to gRPC server");
 
     let (tx_out, rx_out) = mpsc::channel::<Frame>(32);
     let pending: PendingMap = Arc::new(Mutex::new(HashMap::new()));
 
     let outbound = ReceiverStream::new(rx_out);
+    println!("bgc-client: Opening bidirectional stream");
     let response = client
         .open(Request::new(outbound))
         .await
         .context("opening gRPC stream")
         .unwrap();
     let mut inbound = response.into_inner();
+    println!("bgc-client: Bidirectional stream opened successfully");
 
     let pending_in = pending.clone();
     let tx_out_in = tx_out.clone();
 
     tokio::spawn(async move {
+        println!("bgc-client: Started inbound frame handler task");
         while let Some(result) = inbound.next().await {
             match result {
                 Ok(frame) => {
+                    println!(
+                        "bgc-client: Received frame: kind={} id={} action={} event={}",
+                        frame.kind, frame.id, frame.action, frame.event
+                    );
                     handle_incoming_frame(frame, &pending_in, &tx_out_in).await;
                 }
                 Err(e) => {
-                    eprintln!("client: error receiving frame: {e:?}");
+                    eprintln!("bgc-client: Error receiving frame: {e:?}");
                     break;
                 }
             }
         }
+        println!("bgc-client: Inbound frame handler task ended");
     });
 
     // Example: periodically request active tab via Chrome
+    println!("bgc-client: Starting request loop (every 3 seconds)");
     loop {
         let payload = Value::Null;
+        println!("bgc-client: Sending get_active_tab request");
         match send_request("get_active_tab", payload, &tx_out, &pending).await {
             Ok(resp_frame) => {
                 println!(
-                    "client: got response id={} ok={} payload_json={}",
+                    "bgc-client: Got response id={} ok={} payload_json={}",
                     resp_frame.id, resp_frame.ok, resp_frame.payload_json
                 );
             }
             Err(e) => {
-                eprintln!("client: request error: {e:?}");
+                eprintln!("bgc-client: Request error: {e:?}");
                 break;
             }
         }
@@ -78,24 +92,29 @@ async fn main() -> anyhow::Result<()> {
 async fn handle_incoming_frame(frame: Frame, pending: &PendingMap, tx_out: &mpsc::Sender<Frame>) {
     match frame.kind.as_str() {
         "response" => {
+            println!("bgc-client: Processing response frame id={}", frame.id);
             if let Some(tx) = pending.lock().unwrap().remove(&frame.id) {
+                println!(
+                    "bgc-client: Matched response to pending request id={}",
+                    frame.id
+                );
                 let _ = tx.send(frame);
             } else {
                 eprintln!(
-                    "client: unexpected response id={} payload_json={}",
+                    "bgc-client: Unexpected response id={} payload_json={}",
                     frame.id, frame.payload_json
                 );
             }
         }
         "event" => {
             println!(
-                "client: unsolicited event from Chrome: event={} payload_json={}",
+                "bgc-client: Unsolicited event from Chrome: event={} payload_json={}",
                 frame.event, frame.payload_json
             );
         }
         "request" => {
             println!(
-                "client: request from Chrome: id={} action={} payload_json={}",
+                "bgc-client: Request from Chrome: id={} action={} payload_json={}",
                 frame.id, frame.action, frame.payload_json
             );
 
@@ -113,12 +132,16 @@ async fn handle_incoming_frame(frame: Frame, pending: &PendingMap, tx_out: &mpsc
                 ok: true,
             };
 
+            println!(
+                "bgc-client: Sending response to Chrome for request id={}",
+                frame.id
+            );
             if let Err(e) = tx_out.send(resp).await {
-                eprintln!("client: failed sending response: {e:?}");
+                eprintln!("bgc-client: Failed sending response: {e:?}");
             }
         }
         other => {
-            eprintln!("client: unknown frame kind={other}");
+            eprintln!("bgc-client: Unknown frame kind={other}");
         }
     }
 }
@@ -133,6 +156,7 @@ async fn send_request(
     let (tx, rx) = oneshot::channel();
 
     pending.lock().unwrap().insert(id, tx);
+    println!("bgc-client: Created request id={} action={}", id, action);
 
     let frame = Frame {
         kind: "request".to_string(),
@@ -143,11 +167,14 @@ async fn send_request(
         ok: true,
     };
 
+    println!("bgc-client: Sending request frame to outbound channel");
     tx_out
         .send(frame)
         .await
         .context("sending request frame failed")?;
 
+    println!("bgc-client: Waiting for response to request id={}", id);
     let resp = rx.await.context("oneshot receive failed")?;
+    println!("bgc-client: Received response for request id={}", id);
     Ok(resp)
 }

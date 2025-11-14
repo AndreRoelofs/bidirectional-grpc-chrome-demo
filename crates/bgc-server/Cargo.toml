@@ -15,6 +15,7 @@ serde_json_lenient = { workspace = true }
 
 anyhow = { workspace = true }
 tracing = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter", "fmt"] }
 tonic = { workspace = true }
 tonic-prost = { workspace = true }
 futures = { workspace = true }

@@ -1,0 +1,4 @@
+[2m2025-11-14T11:20:52.526101Z[0m [32m INFO[0m [2mbgc_server[0m[2m:[0m bgc-server: Starting native messaging host
+[2m2025-11-14T11:20:52.526125Z[0m [32m INFO[0m [2mbgc_server[0m[2m:[0m bgc-server: Waiting for Chrome connection on stdin/stdout
+[2m2025-11-14T11:20:52.526133Z[0m [32m INFO[0m [2mbgc_server[0m[2m:[0m bgc-server: gRPC server will listen on [::1]:50051
+[2m2025-11-14T11:20:52.526240Z[0m [32m INFO[0m [2mbgc_server[0m[2m:[0m bgc-server: Starting gRPC server on [::1]:50051

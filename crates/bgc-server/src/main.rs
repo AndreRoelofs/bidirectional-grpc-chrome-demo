@@ -1,11 +1,21 @@
+use std::net::ToSocketAddrs;
 use std::pin::Pin;
 
 use anyhow::Context;
 use futures::Stream;
+use std::fs::File;
 use tokio::io::{self, AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, mpsc};
 use tokio_stream::wrappers::ReceiverStream;
 use tonic::{Request, Response, Status, transport::Server};
+
+use tracing::info;
+#[allow(unused_imports)]
+use tracing_subscriber::prelude::*;
+use tracing_subscriber::{
+    filter::{EnvFilter, LevelFilter},
+    fmt,
+};
 
 mod bridge;
 
@@ -42,40 +52,57 @@ impl Bridge for BridgeService {
 
         // Task: client → host → Chrome
         tokio::spawn(async move {
+            info!("bgc-server: gRPC client connected, starting forward task (client → Chrome)");
             loop {
                 match inbound.message().await {
-                    Ok(frame) => {
-                        if let Err(e) = chrome_tx.send(frame.unwrap()) {
-                            eprintln!("bridge: error forwarding frame to Chrome: {e:?}");
+                    Ok(Some(frame)) => {
+                        info!(
+                            "bgc-server: Forwarding frame from gRPC client to Chrome: kind={} id={} action={}",
+                            frame.kind, frame.id, frame.action
+                        );
+                        if let Err(e) = chrome_tx.send(frame) {
+                            info!("bgc-server: Error forwarding frame to Chrome: {e:?}");
                             break;
                         }
                     }
+                    Ok(None) => {
+                        info!("bgc-server: gRPC client stream ended");
+                        break;
+                    }
                     Err(e) => {
-                        eprintln!("bridge: client stream error: {e:?}");
+                        info!("bgc-server: gRPC client stream error: {e:?}");
                         break;
                     }
                 }
             }
+            info!("bgc-server: Forward task ended (client → Chrome)");
         });
 
         // Task: Chrome → host → client
         tokio::spawn(async move {
+            info!("bgc-server: Starting broadcast task (Chrome → gRPC client)");
             loop {
                 match chrome_from_rx.recv().await {
                     Ok(frame) => {
+                        info!(
+                            "bgc-server: Broadcasting frame from Chrome to gRPC client: kind={} id={} action={}",
+                            frame.kind, frame.id, frame.action
+                        );
                         if tx_to_client.send(Ok(frame)).await.is_err() {
+                            info!("bgc-server: gRPC client disconnected");
                             break;
                         }
                     }
                     Err(broadcast::error::RecvError::Lagged(n)) => {
-                        eprintln!("bridge: client lagged behind by {n} frames");
+                        info!("bgc-server: gRPC client lagged behind by {n} frames");
                     }
                     Err(e) => {
-                        eprintln!("bridge: broadcast receive error for client: {e:?}");
+                        info!("bgc-server: Broadcast receive error for client: {e:?}");
                         break;
                     }
                 }
             }
+            info!("bgc-server: Broadcast task ended (Chrome → gRPC client)");
         });
 
         let out_stream = ReceiverStream::new(rx_to_client);
@@ -130,46 +157,81 @@ where
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let filter = EnvFilter::builder()
+        .with_default_directive(LevelFilter::WARN.into()) // anything not listed → WARN
+        .parse_lossy("bgc_=trace,hyper=off,tokio=off"); // keep yours, silence deps
+
+    // Write only to file
+    fmt()
+        .with_env_filter(filter.clone())
+        .with_writer(File::create("bgc-native-messaging.log")?)
+        .init();
+
+    info!("bgc-server: Starting native messaging host");
+    info!("bgc-server: Waiting for Chrome connection on stdin/stdout");
+    info!("bgc-server: gRPC server will listen on [::1]:50051");
+
     // Frames host → Chrome
     let (chrome_tx, mut chrome_rx) = mpsc::unbounded_channel::<Frame>();
     // Frames Chrome → host (broadcast to all gRPC clients)
     let (chrome_from_tx, _) = broadcast::channel::<Frame>(1024);
 
+    // Shutdown signal: when stdin closes, we need to exit
+    let (shutdown_tx, mut shutdown_rx) = mpsc::channel::<()>(1);
+
     // Native messaging writer: host → Chrome
-    tokio::spawn(async move {
+    let writer_handle = tokio::spawn(async move {
         let mut stdout = io::stdout();
+        info!("bgc-server: Native messaging writer task started");
         while let Some(frame) = chrome_rx.recv().await {
+            info!(
+                "bgc-server: Writing frame to Chrome: kind={} id={} action={}",
+                frame.kind, frame.id, frame.action
+            );
             if let Err(e) = write_framed(&mut stdout, &frame).await {
-                eprintln!("native host write error: {e:?}");
+                info!("bgc-server: Native host write error: {e:?}");
                 break;
             }
         }
+        info!("bgc-server: Native messaging writer task ended");
     });
 
     // Native messaging reader: Chrome → host
-    {
+    let reader_handle = {
         let chrome_from_tx = chrome_from_tx.clone();
+        let shutdown_tx = shutdown_tx.clone();
         tokio::spawn(async move {
             let mut stdin = io::stdin();
+            info!(
+                "bgc-server: Native messaging reader task started, waiting for input from Chrome"
+            );
             loop {
                 match read_framed(&mut stdin).await {
                     Ok(Some(frame)) => {
+                        info!(
+                            "bgc-server: Received frame from Chrome: kind={} id={} action={} event={}",
+                            frame.kind, frame.id, frame.action, frame.event
+                        );
                         if chrome_from_tx.send(frame).is_err() {
+                            info!("bgc-server: Failed to broadcast frame (no receivers)");
                             break;
                         }
                     }
                     Ok(None) => {
-                        // EOF from Chrome
+                        info!("bgc-server: EOF from Chrome, connection closed");
                         break;
                     }
                     Err(e) => {
-                        eprintln!("native host read error: {e:?}");
+                        info!("bgc-server: Native host read error: {e:?}");
                         break;
                     }
                 }
             }
-        });
-    }
+            info!("bgc-server: Native messaging reader task ended");
+            // Signal shutdown when stdin closes
+            let _ = shutdown_tx.send(()).await;
+        })
+    };
 
     // gRPC server
     let svc = BridgeService {
@@ -177,11 +239,39 @@ async fn main() -> anyhow::Result<()> {
         chrome_from_tx,
     };
 
-    let addr = "[::1]:50051".parse().unwrap();
+    let grpc_handle = tokio::spawn(async move {
+        info!("bgc-server: Starting gRPC server on [::1]:50051");
+        let addr = format!("[::1]:50051")
+            .to_socket_addrs()
+            .unwrap()
+            .next()
+            .unwrap();
 
-    Server::builder()
-        .add_service(BridgeServer::new(svc))
-        .serve(addr)
-        .await
-        .context("running gRPC bridge server")
+        if let Err(e) = Server::builder()
+            .add_service(BridgeServer::new(svc))
+            .serve(addr)
+            .await
+        {
+            info!("bgc-server: gRPC server error: {e:?}");
+        }
+        info!("bgc-server: gRPC server ended");
+    });
+
+    // Wait for shutdown signal (when Chrome disconnects)
+    tokio::select! {
+        _ = shutdown_rx.recv() => {
+            info!("bgc-server: Received shutdown signal, exiting");
+        }
+        _ = reader_handle => {
+            info!("bgc-server: Reader task ended, exiting");
+        }
+        _ = writer_handle => {
+            info!("bgc-server: Writer task ended, exiting");
+        }
+    }
+
+    info!("bgc-server: Shutting down");
+    grpc_handle.abort();
+
+    Ok(())
 }
