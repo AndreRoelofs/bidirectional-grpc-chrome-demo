@@ -3,6 +3,28 @@ let nextId = 1;
 
 const pendingHostRequests = new Map();
 
+// Statistics tracking
+const stats = {
+  totalSent: 0,
+  totalReceived: 0,
+  totalErrors: 0,
+  totalTimeouts: 0,
+
+  report() {
+    console.log("\n=== CHROME EXTENSION STRESS TEST STATISTICS ===");
+    console.log(`Total requests sent: ${this.totalSent}`);
+    console.log(`Total responses received: ${this.totalReceived}`);
+    console.log(`Total errors: ${this.totalErrors}`);
+    console.log(`Total timeouts: ${this.totalTimeouts}`);
+    const successRate =
+      this.totalSent > 0
+        ? ((this.totalReceived / this.totalSent) * 100).toFixed(2)
+        : 0;
+    console.log(`Success rate: ${successRate}%`);
+    console.log("===============================================\n");
+  },
+};
+
 function connectNative() {
   if (port) return;
 
@@ -22,11 +44,15 @@ function onNativeMessage(msg) {
 
   switch (msg.kind) {
     case "response": {
-      const resolver = pendingHostRequests.get(msg.id);
-      if (resolver) {
+      const pendingData = pendingHostRequests.get(msg.id);
+      if (pendingData) {
         pendingHostRequests.delete(msg.id);
+        const elapsed = Date.now() - pendingData.startTime;
+        console.log(`Response received for id=${msg.id} (took ${elapsed}ms)`);
+        stats.totalReceived++;
+
         const payload = msg.payload_json ? JSON.parse(msg.payload_json) : null;
-        resolver({ ...msg, payload });
+        pendingData.resolve({ ...msg, payload });
       } else {
         console.warn("Unexpected response from host", msg);
       }
@@ -59,13 +85,17 @@ function sendRequestToHost(action, payload) {
     ok: true,
   };
 
+  stats.totalSent++;
+
   return new Promise((resolve, reject) => {
-    pendingHostRequests.set(id, resolve);
+    const startTime = Date.now();
+    pendingHostRequests.set(id, { resolve, reject, startTime });
 
     try {
       port.postMessage(frame);
     } catch (err) {
       pendingHostRequests.delete(id);
+      stats.totalErrors++;
       reject(err);
       return;
     }
@@ -73,7 +103,8 @@ function sendRequestToHost(action, payload) {
     setTimeout(() => {
       if (pendingHostRequests.has(id)) {
         pendingHostRequests.delete(id);
-        reject(new Error("Native host timeout"));
+        stats.totalTimeouts++;
+        reject(new Error(`Native host timeout for request id=${id}`));
       }
     }, 10000);
   });
@@ -142,16 +173,77 @@ function sendHeartbeatEvent() {
   port.postMessage(frame);
 }
 
+// Stress test function
+async function runStressTest() {
+  console.log("\n=== STARTING CHROME EXTENSION STRESS TEST ===");
+  console.log("Sending 50 concurrent requests in 5 batches of 10...\n");
+
+  for (let batch = 0; batch < 5; batch++) {
+    console.log(`--- Batch ${batch + 1} ---`);
+
+    const promises = [];
+
+    for (let i = 0; i < 10; i++) {
+      const action =
+        i % 3 === 0
+          ? "get_active_tab"
+          : i % 3 === 1
+          ? "host_info"
+          : "test_action";
+      const payload = {
+        batch,
+        request: i,
+        timestamp: Date.now(),
+      };
+
+      const promise = sendRequestToHost(action, payload)
+        .then((resp) => {
+          console.log(
+            `✓ Batch ${batch} Request ${i}: Success (id=${resp.id}, action=${action})`
+          );
+        })
+        .catch((err) => {
+          console.error(`✗ Batch ${batch} Request ${i}: Error:`, err.message);
+          stats.totalErrors++;
+        });
+
+      promises.push(promise);
+    }
+
+    await Promise.all(promises);
+    console.log(`Batch ${batch + 1} completed\n`);
+
+    // Brief pause between batches
+    await new Promise((resolve) => setTimeout(resolve, 500));
+  }
+
+  console.log("=== STRESS TEST COMPLETED ===");
+  stats.report();
+}
+
 chrome.action.onClicked.addListener(() => {
   connectNative();
-  sendRequestToHost("host_info", { source: "extension_action_click" })
-    .then((resp) => {
-      console.log("Response from host:", resp);
-    })
-    .catch((err) => {
-      console.error("Failed to call host:", err);
-    });
+
+  // Run the stress test
+  runStressTest().then(() => {
+    console.log("Stress test finished, continuing with normal operation...");
+  });
 });
+
+// Automatically run stress test on startup after a brief delay
+setTimeout(() => {
+  console.log("Running automatic stress test on startup...");
+  runStressTest().then(() => {
+    console.log("Automatic stress test completed");
+  });
+}, 2000);
+
+// Report stats periodically
+setInterval(() => {
+  if (stats.totalSent > 0) {
+    stats.report();
+  }
+}, 10000);
 
 connectNative();
 setInterval(sendHeartbeatEvent, 15000);
